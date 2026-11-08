@@ -287,6 +287,9 @@ def test_empty_model_addresses_do_not_call_cloud(monkeypatch):
         with pytest.raises(RuntimeError):
             asyncio.run(chat("", provider))
     assert hits == []
-    vue = Path("/workspace/frontend/src/components/shop_settings/AiSettingsPanel.vue").read_text(encoding="utf-8")
+    vue = (
+        Path(__file__).resolve().parents[2]
+        / "frontend/src/components/shop_settings/AiSettingsPanel.vue"
+    ).read_text(encoding="utf-8")
     assert "form.api_base = opt.default_base_url" not in vue
     assert "空白地址不会改用云端默认" in vue

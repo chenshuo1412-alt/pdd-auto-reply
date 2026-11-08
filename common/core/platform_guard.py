@@ -14,6 +14,7 @@ import os
 from urllib.parse import urlparse
 
 from common.core.live_grant import buyer_granted, shop_granted
+from common.core.login_session import read_session
 
 PLATFORM_HTTP_ORIGIN = "https://mms.pinduoduo.com"
 PLATFORM_WS_ORIGIN = "wss://m-ws.pinduoduo.com/"
@@ -98,6 +99,8 @@ def decide(
     customer_uid: str | None = None,
 ) -> tuple[bool, str]:
     """判断一次平台动作是否允许。返回 (允许, 中文原因)。"""
+    if purpose == "visible_login":
+        return _decide_visible_login(url)
     mode = network_mode()
     if mode == "safe":
         return False, "安全模式拒绝平台出站"
@@ -110,6 +113,24 @@ def decide(
     if mode == "loopback":
         return _decide_loopback(purpose, shop_id, url, customer_uid)
     return _decide_live(purpose, shop_id, url, customer_uid)
+
+
+def _decide_visible_login(url: str | None) -> tuple[bool, str]:
+    """只放行短时许可下的官网登录页或首页。不授权收消息或发送。"""
+    if url is not None:
+        parsed = urlparse(url)
+        path = (parsed.path or "/").rstrip("/") or "/"
+        if (
+            parsed.scheme != "https"
+            or (parsed.hostname or "").lower() != "mms.pinduoduo.com"
+            or parsed.username is not None
+            or path not in {"/login", "/home"}
+        ):
+            return False, "只允许打开官网登录页或首页"
+    active, reason = read_session()
+    if active is None:
+        return False, reason
+    return True, "ok"
 
 
 def _decide_loopback(

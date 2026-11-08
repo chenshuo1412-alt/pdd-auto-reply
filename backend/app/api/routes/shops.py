@@ -37,9 +37,10 @@ from app.api.deps import get_current_user
 from app.core import permission
 from app.core.business_codes import CODE_FORBIDDEN, MSG_FORBIDDEN
 from app.services import account_service
+from app.services.shop_login_client import start_visible_login
 from common.db.session import get_db
 from common.models.user_models import SysUser
-from common.schemas.common import ApiResponse, error_response
+from common.schemas.common import ApiResponse, error_response, success_response
 
 # 店铺与账号管理路由：标签「店铺与账号」便于 OpenAPI 文档分组；前缀由聚合层添加。
 router = APIRouter(tags=["店铺与账号"])
@@ -210,6 +211,32 @@ def import_shop_by_cookie(
         remark=payload.remark,
         operator_id=current_user.id,
     )
+
+
+class VisibleLoginRequest(BaseModel):
+    """管理端确认打开官网登录页。不包含密码或 Cookie。"""
+
+    confirm: str = Field(..., description="必须为 OPEN_OFFICIAL_LOGIN")
+
+
+@router.post(
+    "/shops/visible-login",
+    response_model=ApiResponse,
+    summary="打开官网登录页核对，不创建店铺、不保存凭据",
+)
+def visible_shop_login(
+    payload: VisibleLoginRequest,
+    current_user: SysUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ApiResponse:
+    """人工打开官网登录页。成功也不落库，因为页面没有给出店铺 ID。"""
+    denied = _ensure_permission(current_user, "create", db)
+    if denied is not None:
+        return denied
+    result = start_visible_login(payload.confirm)
+    if not result.ok:
+        return error_response(-1, result.message or "官方页面登录未完成")
+    return success_response(data=result.info, message=result.message or "已核对官网可见页面")
 
 
 @router.get("/shops", response_model=ApiResponse, summary="店铺列表（北京时间倒序、后端分页）")

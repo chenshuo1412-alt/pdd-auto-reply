@@ -186,9 +186,11 @@ cd common && pytest         # 公共库测试
 
 默认 `PDD_NETWORK_MODE=safe`：不连接平台、不取 token、不把客服置为在线、不发送。未知模式同样拒绝。登录页、Cookie 刷新和商品同步不会因为改成 `live` 而放开。
 
-`live` 只允许连接官方主机 `mms.pinduoduo.com` 与 `m-ws.pinduoduo.com`，并且每次都会重新读取 `PDD_LIVE_GRANT_PATH`。授权文件必须同时满足：`confirmed` 为 JSON 布尔值 `true`（人工确认）、`shop_id` 是一个店铺业务 ID、`buyer_uids` 是非空的测试买家 uid 列表、`expires_at` 是带时区且未过期的时间。买家 uid 来自消息里的 `from.uid`，不是昵称，不能用 `*` 或空字符串。名单之外、身份缺失或歧义的消息不会进入模型、工具、转人工或发送。删除文件、把 `confirmed` 改成 `false` 或等到过期都会立即失效；重启不会扩大范围。仓库里的 `pdd-live-grant.example.json` 不是授权。
+`live` 仍要求授权文件同时有 `confirmed: true`、一个 `shop_id`、非空 `buyer_uids` 和未过期的 `expires_at`。买家标识只认消息 `from.uid`。官网普通页面不显示这个值，程序也不会监听全店客户或导出 Cookie 来收集它。所以测试买家配对现在还不能在界面里完成。`pdd-live-grant.example.json` 不是授权。
 
-发送仍要另设 `PDD_SEND_ENABLED=1`，置在线另设 `PDD_PRESENCE_ENABLED=1`，默认都关闭。因此即使授权生效，也只是允许接入，不会自动回复。这套平台协议不是官方接口，本仓库没有在真实店铺验证过。
+管理端「官方页面登录核对」在你点击后，用新的空目录打开 `https://mms.pinduoduo.com/login`。账号和验证码由你在那个窗口里自己完成。程序只看地址和标题，不读旧浏览器、钥匙串或 Cookie。验证码没过就停止。即使标题变成商家后台，结果里也没有店铺 ID 和买家 uid，不会收消息、置在线或发送。账号密码和粘贴 Cookie 两条旧入口保持关闭。
+
+发送仍要另设 `PDD_SEND_ENABLED=1`，置在线另设 `PDD_PRESENCE_ENABLED=1`，默认都关闭。这套平台协议不是官方公开接口，本仓库没有在真实店铺验证过。
 
 同一店铺的同一个 `msg_id` 只会占用一次。超时、断连或空响应记为不明，不会自动重发。
 

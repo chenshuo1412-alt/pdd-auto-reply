@@ -42,6 +42,7 @@ _LOGIN_TIMEOUT_SECONDS: float = 180.0
 # websocket 服务登录接口的相对路径（与 websocket 路由约定一致）。
 _PASSWORD_LOGIN_PATH: str = "/api/v1/login/password"
 _COOKIE_IMPORT_PATH: str = "/api/v1/login/cookie"
+_VISIBLE_LOGIN_PATH: str = "/api/v1/login/visible"
 
 
 @dataclass
@@ -133,4 +134,22 @@ def import_by_cookie(cookies: str) -> ShopLoginResult:
     )
 
 
-__all__ = ["ShopLoginResult", "login_by_password", "import_by_cookie"]
+def start_visible_login(confirm: str) -> ShopLoginResult:
+    """请 websocket 打开官网登录页。不传递密码或 Cookie，也不要求返回店铺 ID。"""
+    response = service_client.post_json(
+        service_client.websocket_base_url(),
+        _VISIBLE_LOGIN_PATH,
+        {"confirm": confirm},
+        timeout=_LOGIN_TIMEOUT_SECONDS,
+    )
+    if not response.ok or response.body is None:
+        return ShopLoginResult(ok=False, message="登录服务暂不可用，请稍后重试")
+    if not response.success:
+        return ShopLoginResult(ok=False, message=str(response.message or "官方页面登录未完成"))
+    info = response.data if isinstance(response.data, dict) else {}
+    if info.get("cookies_exported") or info.get("can_connect") or info.get("shop_id") or info.get("buyer_uid"):
+        return ShopLoginResult(ok=False, message="官方页面核对返回了不应出现的凭据或店铺标识")
+    return ShopLoginResult(ok=True, info=info, message=str(response.message or ""))
+
+
+__all__ = ["ShopLoginResult", "login_by_password", "import_by_cookie", "start_visible_login"]

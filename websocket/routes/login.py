@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 from channel_pdd import pdd_login
 from common.core.platform_guard import PlatformDenied, enforce
 from common.schemas.common import ApiResponse, error_response, success_response
+from login.visible_login import run_visible_login
 
 logger = logging.getLogger("websocket.routes.login")
 
@@ -74,8 +75,11 @@ async def login_by_password(payload: PasswordLoginRequest) -> ApiResponse:
     try:
         enforce("login")
         info = await pdd_login.login_pdd(payload.username, payload.password)
-    except PlatformDenied as exc:
-        return error_response(-1, str(exc))
+    except PlatformDenied:
+        return error_response(
+            -1,
+            "账号密码登录已停用。请使用官方页面登录核对；该步骤不保存密码或 Cookie。",
+        )
     except Exception as exc:  # noqa: BLE001 - 登录异常不抛出，规整为失败响应
         logger.error("账号 '%s' 登录异常：%s", payload.username, exc)
         return error_response(-1, "账号密码登录失败，请稍后重试")
@@ -108,8 +112,11 @@ async def login_by_cookie(payload: CookieImportRequest) -> ApiResponse:
     try:
         enforce("login")
         result = pdd_login.import_by_cookie(payload.cookies)
-    except PlatformDenied as exc:
-        return error_response(-1, str(exc))
+    except PlatformDenied:
+        return error_response(
+            -1,
+            "粘贴 Cookie 已停用。请使用官方页面登录核对；该步骤不导出 Cookie。",
+        )
     except Exception as exc:  # noqa: BLE001 - 导入异常不抛出，规整为失败响应
         logger.error("Cookie 导入校验异常：%s", exc)
         return error_response(-1, "Cookie 导入失败，请稍后重试")
@@ -120,6 +127,34 @@ async def login_by_cookie(payload: CookieImportRequest) -> ApiResponse:
         return error_response(-1, message)
 
     return success_response(data=result.get("data"), message="Cookie 校验通过")
+
+
+class VisibleLoginRequest(BaseModel):
+    """管理端明确确认后，才打开官网登录页。"""
+
+    confirm: str = Field(..., description="必须为 OPEN_OFFICIAL_LOGIN")
+
+
+@router.post("/login/visible", response_model=ApiResponse, summary="打开官网登录页并只核对可见页面")
+async def visible_page_login(payload: VisibleLoginRequest) -> ApiResponse:
+    """人工打开官网登录页。不接收密码或 Cookie，也不创建收消息授权。"""
+    from login.visible_browser import PlaywrightVisibleBrowser
+
+    result = await run_visible_login(
+        PlaywrightVisibleBrowser(), confirm=payload.confirm
+    )
+    if result.status != "visible_page_reached":
+        return error_response(-1, result.message)
+    return success_response(data=result.as_dict(), message=result.message)
+
+
+@router.post("/login/visible/revoke", response_model=ApiResponse, summary="撤销官方页面登录许可")
+async def revoke_visible_login() -> ApiResponse:
+    """删除短时登录许可。等待中的页面核对会失败。"""
+    from common.core.login_session import revoke
+
+    revoke()
+    return success_response(message="已撤销官方页面登录许可")
 
 
 __all__ = ["router"]

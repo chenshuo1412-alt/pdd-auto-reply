@@ -58,3 +58,8 @@ export function importShopByCookie(payload) {
 export function loginShopByPassword(payload) {
   return post('/shops/login-by-password', payload)
 }
+
+// 打开官网登录页做可见核对。不提交密码或 Cookie，成功也不代表已取得店铺 ID。
+export function startVisibleLogin(confirm) {
+  return post('/shops/visible-login', { confirm })
+}

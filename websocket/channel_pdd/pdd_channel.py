@@ -40,6 +40,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any, Awaitable, Callable, Dict, Optional, Protocol
 
 import websockets
@@ -51,6 +52,7 @@ from channel_pdd.core.connection_status import (
 )
 from channel_pdd.core.pdd_config import HeartbeatConfig, ReconnectConfig
 from channel_pdd.core.pdd_token import default_token_provider
+from common.core.platform_guard import PlatformDenied, decide, enforce, ws_origin
 from channel_pdd.message_queue import FifoMessageQueue
 from channel_pdd.pdd_message import PDDChatMessage
 
@@ -82,10 +84,18 @@ def _log_raw_message_enabled() -> bool:
     Returns:
         True 表示打印完整原始报文；False 表示不打印。
     """
-    raw = os.environ.get("PDD_LOG_RAW_MESSAGE")
-    if raw is None:
-        return True
-    return raw.strip().lower() not in ("0", "false", "no", "off")
+    raw = os.environ.get("PDD_LOG_RAW_MESSAGE", "0")
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _redact_text(value: Any, limit: int = 24) -> str:
+    """日志用短预览。默认不输出客户原文。"""
+    text = "" if value is None else str(value)
+    if not _log_raw_message_enabled():
+        return f"len={len(text)}"
+    if len(text) > limit:
+        return text[:limit] + f"...(len={len(text)})"
+    return text
 
 
 class MessageQueueProtocol(Protocol):
@@ -169,12 +179,22 @@ class PDDChannel:
         self._heartbeat_task: Optional[asyncio.Task] = None
         # FIFO 消费任务：贯穿连接生命周期（跨重连保持），按序消费队列消息。
         self._consume_task: Optional[asyncio.Task] = None
+        self._reached_connected = False
+        self._connected_at = 0.0
 
     # ------------------------------------------------------------------
     # 启停连接
     # ------------------------------------------------------------------
-    async def start(self) -> None:
-        """启动店铺连接（按需带指数退避自动重连，需求 5.1 / 5.4）。"""
+    async def start(self) -> bool:
+        """启动店铺连接。安全模式直接拒绝，不取 token、不置在线、不建连。"""
+        allowed, reason = decide("connect", shop_id=self.shop_id, url=ws_origin())
+        if not allowed:
+            self.status_manager.update_status(
+                self.shop_id, self.user_id, self.username,
+                ConnectionState.DISCONNECTED, reason,
+            )
+            logger.warning("拒绝连接平台: shop_id=%s, %s", self.shop_id, reason)
+            return False
         self._stop_event = asyncio.Event()
         self.status_manager.update_status(
             self.shop_id, self.user_id, self.username, ConnectionState.CONNECTING
@@ -186,6 +206,7 @@ class PDDChannel:
             self._connect_task = asyncio.create_task(self._connect_with_retry())
         else:
             self._connect_task = asyncio.create_task(self._connect_once())
+        return True
 
     async def stop(self) -> None:
         """主动停止店铺连接并清理任务（需求 5.x：主动停止置「断开」）。"""
@@ -257,32 +278,29 @@ class PDDChannel:
     # 指数退避自动重连（需求 5.4 / 5.5）
     # ------------------------------------------------------------------
     async def _connect_with_retry(self) -> None:
-        """带指数退避的自动重连循环：达上限置「错误」（需求 5.4 / 5.5）。"""
-        for attempt in range(self.reconnect_config.max_attempts):
-            if self._is_stopped():
+        """连续失败才计入上限。稳定连接断开后清零，避免把正常掉线算成错误耗尽。"""
+        failures = 0
+        while not self._is_stopped():
+            allowed, reason = decide("connect", shop_id=self.shop_id, url=ws_origin())
+            if not allowed:
                 self.status_manager.update_status(
                     self.shop_id, self.user_id, self.username,
-                    ConnectionState.DISCONNECTED,
+                    ConnectionState.DISCONNECTED, reason,
                 )
                 return
-
-            # 第二次及以后的尝试视为「重连中」（需求 5.4）。
-            if attempt > 0:
+            if failures > 0:
                 self.status_manager.update_status(
                     self.shop_id, self.user_id, self.username,
                     ConnectionState.RECONNECTING,
                 )
                 logger.info(
-                    "尝试重连（%s/%s）: shop_id=%s",
-                    attempt + 1, self.reconnect_config.max_attempts, self.shop_id,
+                    "尝试重连（连续失败 %s/%s）: shop_id=%s",
+                    failures, self.reconnect_config.max_attempts, self.shop_id,
                 )
-
+            self._reached_connected = False
+            self._connected_at = 0.0
             try:
                 await self._connect_once()
-                # 正常结束（主动停止 / 连接关闭）。若为主动停止则不再重连。
-                if self._is_stopped():
-                    return
-                # 非主动停止的断开视为歧义 / 意外断开，继续退避重连。
             except Exception as exc:  # noqa: BLE001 - 单次连接异常进入退避重连
                 logger.warning("连接异常: shop_id=%s, 错误: %s", self.shop_id, exc)
 
@@ -293,20 +311,33 @@ class PDDChannel:
                 )
                 return
 
-            # 最后一次尝试失败：置「错误」并结束（需求 5.5）。
-            if attempt == self.reconnect_config.max_attempts - 1:
+            held = (time.monotonic() - self._connected_at) if self._connected_at else 0.0
+            try:
+                healthy_seconds = float(os.environ.get("PDD_RECONNECT_HEALTHY_SECONDS", "5"))
+            except ValueError:
+                healthy_seconds = 5.0
+            if self._reached_connected and held >= healthy_seconds:
+                failures = 0
+                logger.info("连接曾稳定建立 %.1f 秒，失败计数已清零: shop_id=%s", held, self.shop_id)
+            else:
+                failures += 1
+            if failures >= self.reconnect_config.max_attempts:
                 self.status_manager.update_status(
                     self.shop_id, self.user_id, self.username,
-                    ConnectionState.ERROR, "重连次数已达上限",
+                    ConnectionState.ERROR, "连续连接失败已达上限，已停止重连",
                 )
-                logger.error(
-                    "连接失败，已达最大重试次数: shop_id=%s", self.shop_id
-                )
+                logger.error("连续连接失败已达上限: shop_id=%s", self.shop_id)
                 return
-
-            # 指数退避等待（封顶 max_delay），等待期间响应停止信号。
-            delay = self.reconnect_config.compute_delay(attempt)
-            logger.warning("连接失败，%.1f 秒后重试: shop_id=%s", delay, self.shop_id)
+            delay = self.reconnect_config.compute_delay(max(failures - 1, 0))
+            if failures == 0:
+                logger.info(
+                    "稳定连接已结束，%.1f 秒后重连: shop_id=%s", delay, self.shop_id
+                )
+            else:
+                logger.warning(
+                    "连接结束，%.1f 秒后重试: shop_id=%s, 连续失败 %s/%s",
+                    delay, self.shop_id, failures, self.reconnect_config.max_attempts,
+                )
             if await self._sleep_or_stop(delay):
                 self.status_manager.update_status(
                     self.shop_id, self.user_id, self.username,
@@ -352,7 +383,8 @@ class PDDChannel:
             raise RuntimeError("未获取到有效 access_token（登录/Token 模块待接入）")
 
         full_url = self._build_handshake_url(access_token)
-        logger.info("正在连接拼多多 WebSocket: shop_id=%s", self.shop_id)
+        enforce("connect", shop_id=self.shop_id, url=full_url)
+        logger.info("正在连接店铺 WebSocket: shop_id=%s", self.shop_id)
 
         # 保活策略二选一，避免双重保活冗余：
         # - 启用自定义心跳循环（_heartbeat_loop）时，关闭 websockets 内建 ping
@@ -371,6 +403,8 @@ class PDDChannel:
             close_timeout=_WS_CLOSE_TIMEOUT,
         ) as websocket:
             self.ws = websocket
+            self._reached_connected = True
+            self._connected_at = time.monotonic()
             self.status_manager.update_status(
                 self.shop_id, self.user_id, self.username, ConnectionState.CONNECTED
             )
@@ -408,7 +442,7 @@ class PDDChannel:
             "version": API_VERSION,
         }
         query = "&".join(f"{key}={value}" for key, value in params.items())
-        return f"{PDD_WEBSOCKET_BASE_URL}?{query}"
+        return f"{ws_origin()}?{query}"
 
     async def _message_loop(self, websocket: Any) -> None:
         """消息接收循环：收到客户消息写入消息队列按序消费（需求 5.3）。
@@ -454,18 +488,18 @@ class PDDChannel:
             # 自行分析各消息类型的原始结构（经 PDD_LOG_RAW_MESSAGE 控制）。
             if _log_raw_message_enabled():
                 logger.info(
-                    "收到消息(完整原文): shop_id=%s, 报文=%s", self.shop_id, text
+                    "收到消息(脱敏预览): shop_id=%s, 报文=%s",
+                    self.shop_id, _redact_text(text, limit=80),
                 )
             payload = json.loads(text)
             chat = PDDChatMessage(payload)
             logger.info(
-                "收到消息: shop_id=%s, 类型=%s, 发送方=%s(%s), 昵称=%s, 内容=%s",
+                "收到消息: shop_id=%s, 类型=%s, 发送方=%s, msg_id=%s, 内容=%s",
                 self.shop_id,
                 chat.user_msg_type,
                 chat.from_user,
-                chat.from_uid,
-                chat.nickname,
-                chat.content,
+                chat.msg_id,
+                _redact_text(chat.content),
             )
         except Exception:  # noqa: BLE001 - 日志解析失败降级打印原文，绝不影响主流程
             preview = str(raw_message)
@@ -588,6 +622,11 @@ class PDDChannel:
         """
         if self.ws is None:
             logger.error("发送回复失败：连接不可用 shop_id=%s", self.shop_id)
+            return False
+        try:
+            enforce("send", shop_id=self.shop_id, url=ws_origin())
+        except PlatformDenied as exc:
+            logger.warning("拒绝经 WebSocket 发送: shop_id=%s, %s", self.shop_id, exc)
             return False
 
         if isinstance(payload, (dict, list)):

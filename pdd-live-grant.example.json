@@ -1,0 +1,7 @@
+{
+  "confirmed": false,
+  "shop_id": "替换为店铺业务ID",
+  "buyer_uids": ["替换为测试买家uid"],
+  "expires_at": "2099-01-01T00:00:00+08:00",
+  "note": "示例不是授权。confirmed 必须为 JSON true，买家填消息 from.uid，不要填昵称。本文件不会被程序自动加载。"
+}

@@ -253,6 +253,8 @@ def test_run_cookie_refresh_no_shops(db_session: Session):
 
 def test_run_cookie_refresh_all_success(db_session: Session, monkeypatch):
     """全部店铺刷新成功：记成功执行日志。"""
+    monkeypatch.setenv("PDD_NETWORK_MODE", "loopback")
+    monkeypatch.setenv("PDD_SCHEDULER_PLATFORM", "1")
     Repository(Shop, db_session).create(
         shop_id="S1", shop_name="店1", owner_user_id=1, status=1
     )
@@ -271,6 +273,8 @@ def test_run_cookie_refresh_all_success(db_session: Session, monkeypatch):
 
 def test_run_product_sync_with_failure(db_session: Session, monkeypatch):
     """部分店铺同步失败：记失败执行日志（需求 21.2）。"""
+    monkeypatch.setenv("PDD_NETWORK_MODE", "loopback")
+    monkeypatch.setenv("PDD_SCHEDULER_PLATFORM", "1")
     Repository(Shop, db_session).create(
         shop_id="S1", shop_name="店1", owner_user_id=1, status=1
     )

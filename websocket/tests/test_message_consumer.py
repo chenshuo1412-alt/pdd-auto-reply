@@ -21,6 +21,8 @@ import json
 
 import pytest
 
+import common.services.reply_dispatch as reply_dispatch
+
 from agent.agent_config import AgentConfig
 from agent.ai_reply_engine import AIReplyResult
 from channel_pdd.transfer_service import TransferResult
@@ -39,6 +41,29 @@ from engine.reply_engine import (
     ShopConfig,
 )
 from engine.keyword_matcher import MATCH_CONTAINS, REPLY_TEXT
+from common.utils.time_utils import now_beijing
+
+
+@pytest.fixture(autouse=True)
+def _memory_dispatch(monkeypatch):
+    """消费器单测不连数据库；去重持久化由回归测试覆盖。"""
+    state = {}
+
+    def admit(shop_id, msg_id, customer_uid=None):
+        text_id = str(msg_id or "").strip()
+        if not text_id:
+            return "missing_msg_id"
+        key = (str(shop_id), text_id)
+        if key in state:
+            return state[key]
+        state[key] = "claimed"
+        return "owner"
+
+    def finish(shop_id, msg_id, status, detail=""):
+        state[(str(shop_id), str(msg_id))] = status
+
+    monkeypatch.setattr(reply_dispatch, "admit", admit)
+    monkeypatch.setattr(reply_dispatch, "finish", finish)
 
 
 # ----------------------------------------------------------------------
@@ -82,8 +107,8 @@ class StubTransferService:
 # ----------------------------------------------------------------------
 # 构造辅助
 # ----------------------------------------------------------------------
-def _raw_text(text="你好", from_uid="cust_1"):
-    """构造一条拼多多文本 push 报文（解析口径见 pdd_message）。"""
+def _raw_text(text="你好", from_uid="cust_1", msg_id=None):
+    """构造一条拼多多文本 push 报文。不同文本默认不同 msg_id。"""
     return json.dumps(
         {
             "response": "push",
@@ -93,7 +118,7 @@ def _raw_text(text="你好", from_uid="cust_1"):
                 "content": text,
                 "from": {"role": "user", "uid": from_uid},
                 "to": {"role": "mall_cs", "uid": "cs_1"},
-                "msg_id": "m1",
+                "msg_id": msg_id or f"{from_uid}:{text}",
             },
         }
     )
@@ -218,7 +243,7 @@ def test_risk_blocked_writes_risk_log_and_notifies():
     )
     consumer, msg_logs, risk_logs, notifies = _make_consumer(runtime)
     # 预置一次会话回复记录，使窗口内计数达上限
-    consumer._session_reply_times["cust_1"].append(__import__("datetime").datetime.now())
+    consumer._session_reply_times["cust_1"].append(now_beijing())
 
     outcome = _run(consumer.consume_raw(_raw_text("你好", from_uid="cust_1")))
 

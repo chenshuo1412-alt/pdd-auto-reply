@@ -69,7 +69,13 @@ class GetToken(BaseRequest):
             成功返回 token 字符串；获取失败返回 None。
         """
         payload = {"version": TOKEN_API_VERSION}
-        result: Optional[dict[str, Any]] = self.post(TOKEN_URL, data=payload)
+        result: Optional[dict[str, Any]] = self.post(
+            TOKEN_URL,
+            data=payload,
+            purpose="token",
+            max_retries=0,
+            allow_relogin=False,
+        )
 
         if result:
             # 兼容两种返回结构：顶层 token 或 result.token。

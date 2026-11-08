@@ -30,6 +30,8 @@ dependencies = [
     "SQLAlchemy>=2.0.0",
     "python-multipart>=0.0.9",
     "Pillow>=10.0.0",
+    "passlib[bcrypt]>=1.7.4",
+    "bcrypt>=4.0.1,<4.1",
 ]
 
 # 可选依赖：测试相关（属性测试统一采用 Hypothesis，最少 100 次迭代）。

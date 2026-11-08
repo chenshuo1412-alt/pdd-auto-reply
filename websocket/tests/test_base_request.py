@@ -36,14 +36,18 @@ class _FakeResponse:
 
 
 @pytest.fixture(autouse=True)
-def _no_sleep(monkeypatch):
-    """消除重试等待，加速测试。"""
+def _loopback_http(monkeypatch):
+    """既有请求单测走回环策略，避免打到真实平台地址。"""
+    monkeypatch.setenv("PDD_NETWORK_MODE", "loopback")
+    monkeypatch.setenv("PDD_HTTP_BASE_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("PDD_ALLOW_SHOP_IDS", "shop1")
     monkeypatch.setattr(br_mod.time, "sleep", lambda *_a, **_k: None)
 
 
 def _make_request(cookies=None):
     """构造不触发 DB 加载的 BaseRequest，并手动注入 cookies。"""
     req = BaseRequest(max_retries=2, retry_delay=0.01)
+    req.shop_id = "shop1"
     req.cookies = cookies or {}
     return req
 

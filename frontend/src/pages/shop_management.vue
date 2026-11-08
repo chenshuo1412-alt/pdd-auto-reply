@@ -114,6 +114,15 @@ function openCookieImport() {
   formVisible.value = true
 }
 
+async function startVisibleLogin() {
+  const data = await shopApi.startVisibleLogin('OPEN_OFFICIAL_LOGIN').catch(() => null)
+  if (!data) {
+    return
+  }
+  const limitation = data.limitation || '官网页面没有提供店铺 ID 或买家 uid，不会创建店铺。'
+  showToast(limitation, TOAST_TYPE.WARNING)
+}
+
 // 打开「编辑」弹窗（需求 3.4 / 3.6）：可改备注 / 名称，并反显账号 / 密码 / Cookie 供修改
 async function openEdit(shop) {
   resetForm()
@@ -279,7 +288,8 @@ onMounted(loadShops)
         </div>
       </div>
       <div class="shop-page__actions">
-        <button class="btn btn--primary" type="button" @click="openPasswordLogin">账号密码登录</button>
+        <button class="btn btn--primary" type="button" @click="startVisibleLogin">官方页面登录核对</button>
+        <button class="btn btn--default" type="button" @click="openPasswordLogin">账号密码登录</button>
         <button class="btn btn--default" type="button" @click="openCookieImport">Cookie 导入</button>
       </div>
     </div>

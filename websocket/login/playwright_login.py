@@ -35,6 +35,8 @@ from typing import Any, Dict, List, Optional
 
 from playwright.async_api import async_playwright
 
+from common.core.platform_guard import PlatformDenied, enforce
+
 from common.core.config import get_settings
 
 logger = logging.getLogger("login.playwright_login")
@@ -237,6 +239,11 @@ async def login_with_password(name: str, password: str) -> Optional[str]:
     Returns:
         登录成功返回 Cookie 的 JSON 字符串；失败 / 超时返回 None。
     """
+    try:
+        enforce("login", url=PDD_LOGIN_URL)
+    except PlatformDenied as exc:
+        logger.warning("拒绝打开平台登录页: %s", exc)
+        return None
     settings = get_settings()
     headless = bool(settings.browser_headless)
     user_data_dir = _resolve_user_data_dir(name)
@@ -295,6 +302,11 @@ async def refresh_with_user_data(name: str) -> Optional[str]:
     Returns:
         刷新成功返回最新 Cookie 的 JSON 字符串；登录态失效 / 异常返回 None。
     """
+    try:
+        enforce("login", url=PDD_HOME_URL)
+    except PlatformDenied as exc:
+        logger.warning("拒绝刷新平台会话: %s", exc)
+        return None
     user_data_dir = _resolve_user_data_dir(name)
     # 用户数据目录不存在说明从未登录过，无法刷新。
     if not os.path.exists(user_data_dir) or not os.listdir(user_data_dir):

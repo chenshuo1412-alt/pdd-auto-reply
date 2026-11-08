@@ -59,12 +59,7 @@ async function loadProviderTypes() {
 
 // 切换接口类型：若 API 地址为空，自动填入该类型默认地址（便于用户）
 function onProviderChange() {
-  if (!form.api_base.trim()) {
-    const opt = providerOptions.value.find((item) => item.key === form.provider_type)
-    if (opt && opt.default_base_url) {
-      form.api_base = opt.default_base_url
-    }
-  }
+  // 不自动填入云端默认地址。地址留空时保存和测试都会被拒绝。
 }
 
 // 拉取某店铺 AI 配置
@@ -111,6 +106,10 @@ async function save() {
     showToast('启用 AI 时请填写模型名称', TOAST_TYPE.WARNING)
     return
   }
+  if (!form.api_base.trim()) {
+    showToast('请填写模型 API 地址，空白地址不会改用云端默认', TOAST_TYPE.WARNING)
+    return
+  }
   const payload = {
     ai_enabled: form.ai_enabled,
     provider_type: form.provider_type,
@@ -139,6 +138,11 @@ async function testConnection() {
     showToast('请先选择店铺', TOAST_TYPE.WARNING)
     return
   }
+  if (!form.api_base.trim()) {
+    showToast('请填写模型 API 地址，空白地址不会改用云端默认', TOAST_TYPE.WARNING)
+    testing.value = false
+    return
+  }
   testing.value = true
   const payload = {
     provider_type: form.provider_type,
@@ -161,6 +165,11 @@ async function testConnection() {
 async function fetchModels() {
   if (!props.shopPk) {
     showToast('请先选择店铺', TOAST_TYPE.WARNING)
+    return
+  }
+  if (!form.api_base.trim()) {
+    showToast('请填写模型 API 地址，空白地址不会改用云端默认', TOAST_TYPE.WARNING)
+    fetchingModels.value = false
     return
   }
   fetchingModels.value = true
@@ -325,7 +334,7 @@ onMounted(async () => {
       </div>
       <label class="field">
         <span class="field__label">API 地址</span>
-        <input v-model="form.api_base" class="field__input" type="text" placeholder="如：https://api.example.com/v1" />
+        <input v-model="form.api_base" class="field__input" type="text" placeholder="必填，例如本机 http://127.0.0.1:11434/v1。留空不会自动改用云端" />
       </label>
       <label class="field">
         <span class="field__label">API 密钥</span>

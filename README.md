@@ -182,6 +182,24 @@ cd common && pytest         # 公共库测试
 
 ---
 
+## 安全默认、受控接入与本机 Ollama
+
+默认 `PDD_NETWORK_MODE=safe`：不连接平台、不取 token、不把客服置为在线、不发送。未知模式同样拒绝。登录页、Cookie 刷新和商品同步不会因为改成 `live` 而放开。
+
+`live` 仍要求授权文件同时有 `confirmed: true`、一个 `shop_id`、非空 `buyer_uids` 和未过期的 `expires_at`。买家标识只认消息 `from.uid`。官网普通页面不显示这个值，程序也不会监听全店客户或导出 Cookie 来收集它。所以测试买家配对现在还不能在界面里完成。`pdd-live-grant.example.json` 不是授权。
+
+管理端「官方页面登录核对」在你点击后，用新的空目录打开 `https://mms.pinduoduo.com/login`。账号和验证码由你在那个窗口里自己完成。程序只看地址和标题，不读旧浏览器、钥匙串或 Cookie。验证码没过就停止。即使标题变成商家后台，结果里也没有店铺 ID 和买家 uid，不会收消息、置在线或发送。账号密码和粘贴 Cookie 两条旧入口保持关闭。
+
+发送仍要另设 `PDD_SEND_ENABLED=1`，置在线另设 `PDD_PRESENCE_ENABLED=1`，默认都关闭。这套平台协议不是官方公开接口，本仓库没有在真实店铺验证过。
+
+同一店铺的同一个 `msg_id` 只会占用一次。超时、断连或空响应记为不明，不会自动重发。
+
+本机已有 Ollama 时，接口类型用 OpenAI 兼容，`api_base` 必须手填 `http://127.0.0.1:11434/v1`。留空会报错，不会改成云端地址。管理端切换接口类型也不会自动填入默认云地址。用户自己写上的云地址会按填写值使用。
+
+Mac 上还需自备 Python 3.11+、Node 18+、MySQL 8，并安装 `bcrypt>=4.0.1,<4.1`。监听地址用 `127.0.0.1`。不要把示例授权或旧浏览器目录拿来使用。上述步骤未在 Mac 上实测。
+
+回环试验使用 `PDD_NETWORK_MODE=loopback` 和回环的 `PDD_HTTP_BASE_URL` / `PDD_WS_BASE_URL`，不能代替 `live` 授权。
+
 ## 许可证
 
 本项目采用 [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE) 开源协议。

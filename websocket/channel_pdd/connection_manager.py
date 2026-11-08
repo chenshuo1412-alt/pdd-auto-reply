@@ -107,7 +107,7 @@ async def start_channel(
     *,
     channel_name: str = "pinduoduo",
     enable_notify: bool = True,
-) -> PDDChannel:
+) -> bool:
     """创建、启动并登记一个店铺连接（端到端链路就绪，需求 5.1 / 5.3）。
 
     Args:
@@ -118,7 +118,7 @@ async def start_channel(
         enable_notify: 是否启用系统事件通知。
 
     Returns:
-        已启动并登记到连接注册表的 PDDChannel 实例。
+        实际启动并登记返回 True；安全模式拒绝时返回 False。
     """
     # 幂等保护：同店铺已有活跃连接则跳过，避免重复建连（参照项目 is_running 判断）。
     existing = connection_registry.get(shop_id, user_id)
@@ -126,7 +126,7 @@ async def start_channel(
         logger.info(
             "店铺已有活跃连接，跳过重复启动: shop_id=%s, user_id=%s", shop_id, user_id
         )
-        return existing
+        return True
 
     channel = create_channel(
         shop_id,
@@ -135,10 +135,13 @@ async def start_channel(
         channel_name=channel_name,
         enable_notify=enable_notify,
     )
-    await channel.start()
+    started = await channel.start()
+    if not started:
+        logger.warning("店铺连接未启动: shop_id=%s", shop_id)
+        return False
     connection_registry.register(shop_id, user_id, channel)
     logger.info("店铺连接已启动并登记: shop_id=%s, user_id=%s", shop_id, user_id)
-    return channel
+    return True
 
 
 async def start_enabled_channels() -> int:
@@ -175,8 +178,8 @@ async def start_enabled_channels() -> int:
     started = 0
     for shop_id, shop_pk, owner_user_id in shops:
         try:
-            await start_channel(shop_id, shop_pk, owner_user_id)
-            started += 1
+            if await start_channel(shop_id, shop_pk, owner_user_id):
+                started += 1
         except Exception as exc:  # noqa: BLE001 - 单店铺启动失败不影响其它店铺
             logger.error("自动启动店铺连接失败: shop_id=%s, %s", shop_id, exc)
 

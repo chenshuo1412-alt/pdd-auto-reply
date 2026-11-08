@@ -58,6 +58,7 @@ from common.models.log_models import (
     RiskLog,
     SystemLog,
 )
+from common.models.reply_dispatch import ReplyDispatch
 from common.models.reply_models import (
     DefaultReply,
     DefaultReplyRecord,
@@ -106,6 +107,7 @@ __all__ = [
     "Account",
     # 回复规则
     "KeywordRule",
+    "ReplyDispatch",
     "DefaultReply",
     "DefaultReplyRecord",
     "GoodsReply",

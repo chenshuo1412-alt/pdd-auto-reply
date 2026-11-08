@@ -20,6 +20,7 @@ import logging
 from typing import Optional
 
 from channel_pdd.core.base_request import BaseRequest
+from common.core.platform_guard import PlatformDenied
 
 logger = logging.getLogger("channel_pdd.set_cs_status")
 
@@ -67,7 +68,13 @@ class CsStatusSetter(BaseRequest):
             "data": {"cmd": "set_csstatus", "status": status},
             "client": "WEB",
         }
-        result = self.post(CS_STATUS_URL, json_data=data)
+        result = self.post(
+            CS_STATUS_URL,
+            json_data=data,
+            purpose="presence",
+            max_retries=0,
+            allow_relogin=False,
+        )
         if result and result.get("success") is True:
             return True
         # 兼容拼多多多种错误字段命名（errorMsg / error_msg / errorMessage），
@@ -105,6 +112,9 @@ def set_cs_online(
         return CsStatusSetter(
             shop_id=shop_id, user_id=user_id, channel_name=channel_name
         ).set_status(CS_STATUS_ONLINE)
+    except PlatformDenied as exc:
+        logger.info("未置在线: shop_id=%s, %s", shop_id, exc)
+        return False
     except Exception as exc:  # noqa: BLE001 - 状态设置失败不影响连接主流程
         logger.error("设置客服在线异常: shop_id=%s, %s", shop_id, exc)
         return False

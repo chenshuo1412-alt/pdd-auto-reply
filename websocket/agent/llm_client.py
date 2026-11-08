@@ -348,10 +348,9 @@ class LLMClient:
 
         system_content, turns = self._split_system_and_turns(messages)
         base = (self.api_base or "").strip()
-        if "/apps/" not in base:
-            raise RuntimeError("DashScope 应用地址中未找到 app_id")
-        app_id = base.split("/apps/", 1)[1].split("/", 1)[0]
-        url = f"https://dashscope.aliyuncs.com/api/v1/apps/{app_id}/completion"
+        if not base.startswith(("http://", "https://")) or "/apps/" not in base:
+            raise RuntimeError("未配置 API 地址，拒绝访问默认云端模型")
+        url = base
 
         # DashScope 应用接收单一 prompt：拼接系统指令与最近一轮用户消息。
         last_user = ""

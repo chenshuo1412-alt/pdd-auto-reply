@@ -423,9 +423,17 @@ class MessageConsumer:
     # ------------------------------------------------------------------
     async def process(self, context: Context) -> ProcessOutcome:
         """占用 msg_id 后处理。同一店铺同一消息只发送一次，结果不明不重发。"""
+        from common.core.live_grant import screen_inbound
+        from common.core.platform_guard import network_mode
         from common.services.reply_dispatch import admit, finish
 
         customer_uid = context.kwargs.get("from_uid")
+        allowed, _reason = screen_inbound(self.shop_id, customer_uid, mode=network_mode())
+        if not allowed:
+            logger.info("测试买家白名单拒绝，未进入回复: shop_id=%s", self.shop_id)
+            return ProcessOutcome(
+                handled=True, action="buyer_denied", replied=False, log_result="buyer_denied"
+            )
         msg_id = str(context.kwargs.get("msg_id") or "").strip()
         verdict = admit(
             self.shop_id, msg_id, None if customer_uid is None else str(customer_uid)
@@ -595,6 +603,16 @@ class MessageConsumer:
         （需求 8 / 17.2）。
         """
         default_reply = runtime.shop_config.default_reply_content
+        from common.core.live_grant import screen_inbound
+        from common.core.platform_guard import network_mode
+
+        allowed, reason = screen_inbound(self.shop_id, customer_uid, mode=network_mode())
+        if not allowed:
+            self._dispatch_status = "failed"
+            self._dispatch_detail = reason
+            return ProcessOutcome(
+                handled=True, action="buyer_denied", replied=False, log_result="buyer_denied"
+            )
         query = self._build_ai_query(context, text)
         # 读取该客户最近的会话历史（按时间正序，转为 OpenAI 风格 user/assistant），
         # 使 AI 能结合上文作答（如「先带商品卡片咨询、再发纯文本追问」场景）。
@@ -724,6 +742,16 @@ class MessageConsumer:
         失败（含签名缺失 ``downgrade=True`` 或接口失败）再降级为文本（需求 26.3）。
         """
         goods_info = context.goods_context or {}
+        from common.core.live_grant import screen_inbound
+        from common.core.platform_guard import network_mode
+
+        allowed, reason = screen_inbound(self.shop_id, customer_uid, mode=network_mode())
+        if not allowed:
+            self._dispatch_status = "failed"
+            self._dispatch_detail = reason
+            return ProcessOutcome(
+                handled=True, action="buyer_denied", replied=False, log_result="buyer_denied"
+            )
         # 复用降级判定提取 goods_id 与降级文本（不依赖 Cookie，二者始终可得）。
         fallback = resolve_goods_card_reply(goods_info)
 
@@ -826,6 +854,16 @@ class MessageConsumer:
             customer_uid,
             text,
         )
+        from common.core.live_grant import screen_inbound
+        from common.core.platform_guard import network_mode
+
+        allowed, reason = screen_inbound(self.shop_id, customer_uid, mode=network_mode())
+        if not allowed:
+            self._dispatch_status = "failed"
+            self._dispatch_detail = reason
+            return ProcessOutcome(
+                handled=True, action="buyer_denied", replied=False, log_result="buyer_denied"
+            )
         result = await asyncio.to_thread(
             lambda: self._get_transfer_service().transfer_to_human(
                 customer_uid, message_content=text
@@ -872,6 +910,16 @@ class MessageConsumer:
         """
         try:
             sender = self._get_sender()
+            from common.core.live_grant import screen_inbound
+            from common.core.platform_guard import network_mode
+
+            allowed, reason = screen_inbound(
+                self.shop_id, recipient_uid, mode=network_mode()
+            )
+            if not allowed:
+                self._dispatch_status = "failed"
+                self._dispatch_detail = reason
+                return False
             if reply_type == REPLY_IMAGE:
                 result = await asyncio.to_thread(sender.send_image, recipient_uid, content)
             else:

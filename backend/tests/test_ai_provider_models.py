@@ -77,7 +77,7 @@ def test_fetch_models_gemini_filters_unsupported(monkeypatch):
             ]
         },
     )
-    models = fetch_model_list("gemini", "", "key-x")
+    models = fetch_model_list("gemini", "https://gemini.example/v1beta", "key-x")
     ids = [m["id"] for m in models]
     assert ids == ["gemini-1.5-pro"]
 

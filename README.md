@@ -182,15 +182,21 @@ cd common && pytest         # 公共库测试
 
 ---
 
-## 安全默认与本机 Ollama
+## 安全默认、受控接入与本机 Ollama
 
-默认 `PDD_NETWORK_MODE=safe`：不连接平台、不取 token、不把客服置为在线、不发送。这不依赖管理端按钮。调度里的 Cookie 刷新和商品同步同样跳过。发送结果如果是超时、断连或空响应，记为不明，**不会自动重发**。同一店铺的同一个 `msg_id` 只会占用一次，换一个店铺不受影响。
+默认 `PDD_NETWORK_MODE=safe`：不连接平台、不取 token、不把客服置为在线、不发送。未知模式同样拒绝。登录页、Cookie 刷新和商品同步不会因为改成 `live` 而放开。
 
-本机已有 Ollama 时，只在管理端把接口类型设为 OpenAI 兼容，`api_base` 填 `http://127.0.0.1:11434/v1`，模型名填本机已有模型，密钥填任意非空字符串，然后只用「测试连接」。`api_base` 留空会直接拒绝，不会访问云端模型。
+`live` 只允许连接官方主机 `mms.pinduoduo.com` 与 `m-ws.pinduoduo.com`，并且每次都会重新读取 `PDD_LIVE_GRANT_PATH`。授权文件必须同时满足：`confirmed` 为 JSON 布尔值 `true`（人工确认）、`shop_id` 是一个店铺业务 ID、`buyer_uids` 是非空的测试买家 uid 列表、`expires_at` 是带时区且未过期的时间。买家 uid 来自消息里的 `from.uid`，不是昵称，不能用 `*` 或空字符串。名单之外、身份缺失或歧义的消息不会进入模型、工具、转人工或发送。删除文件、把 `confirmed` 改成 `false` 或等到过期都会立即失效；重启不会扩大范围。仓库里的 `pdd-live-grant.example.json` 不是授权。
 
-Mac 上还需自备 Python 3.11+、Node 18+、MySQL 8，并安装 `bcrypt>=4.0.1,<4.1`（passlib 1.7.4 与 bcrypt 4.1+ 不兼容）。监听地址用 `127.0.0.1`。不要启动 websocket / scheduler，不要启用店铺，不要粘贴 Cookie，不要复用旧浏览器目录。上述 Ollama 步骤未在 Mac 上实测。
+发送仍要另设 `PDD_SEND_ENABLED=1`，置在线另设 `PDD_PRESENCE_ENABLED=1`，默认都关闭。因此即使授权生效，也只是允许接入，不会自动回复。这套平台协议不是官方接口，本仓库没有在真实店铺验证过。
 
-回环试验（仍不要指向真实店铺）必须同时设置 `PDD_NETWORK_MODE=loopback`、`PDD_ALLOW_SHOP_IDS`、回环的 `PDD_HTTP_BASE_URL` / `PDD_WS_BASE_URL`。发送和置在线另外要 `PDD_SEND_ENABLED=1`、`PDD_PRESENCE_ENABLED=1`。可用 `PDD_ALLOW_SESSION_IDS` 限制客户 UID。
+同一店铺的同一个 `msg_id` 只会占用一次。超时、断连或空响应记为不明，不会自动重发。
+
+本机已有 Ollama 时，接口类型用 OpenAI 兼容，`api_base` 必须手填 `http://127.0.0.1:11434/v1`。留空会报错，不会改成云端地址。管理端切换接口类型也不会自动填入默认云地址。用户自己写上的云地址会按填写值使用。
+
+Mac 上还需自备 Python 3.11+、Node 18+、MySQL 8，并安装 `bcrypt>=4.0.1,<4.1`。监听地址用 `127.0.0.1`。不要把示例授权或旧浏览器目录拿来使用。上述步骤未在 Mac 上实测。
+
+回环试验使用 `PDD_NETWORK_MODE=loopback` 和回环的 `PDD_HTTP_BASE_URL` / `PDD_WS_BASE_URL`，不能代替 `live` 授权。
 
 ## 许可证
 

@@ -36,7 +36,6 @@ from common.schemas.common import ApiResponse, error_response, success_response
 from common.services.ai_provider_service import (
     AiProviderError,
     fetch_model_list,
-    get_default_ai_base_url,
     list_provider_options,
     normalize_ai_provider_type,
     test_ai_connection,
@@ -45,6 +44,17 @@ from common.utils.crypto import encrypt_text, try_decrypt_text
 
 # AI 接口类型的数据字典类型键（与 dict_seed_data 一致）。
 _DICT_TYPE_PROVIDER: str = "ai_provider_type"
+_EMPTY_BASE_MESSAGE = "请填写模型 API 地址，空白地址不会改用云端默认"
+
+
+def _explicit_api_base(api_base: Any, record: LlmConfig | None = None) -> str:
+    """本次填写优先；否则只用库内非空地址。空白不回退云端。"""
+    if api_base is not None and str(api_base).strip():
+        return str(api_base).strip()
+    stored = ""
+    if record is not None and record.api_base:
+        stored = str(record.api_base).strip()
+    return stored
 
 
 def serialize_ai_config(record: LlmConfig) -> Dict[str, Any]:
@@ -131,7 +141,7 @@ def save_ai_config(
         shop_pk: 店铺主键（shop.id）。
         provider_type: 接口类型（openai_compatible/anthropic/gemini/dashscope_app）。
         model_name: 模型名称。
-        api_base: API 接口地址（为空时按接口类型回退默认地址）。
+        api_base: API 接口地址。空白直接拒绝，不写入云端默认地址。
         instructions: 提示词指令文本。
         api_key: API 密钥明文（为空表示不修改已存密钥）。
         ai_enabled: 是否启用 AI 回复。
@@ -149,8 +159,9 @@ def save_ai_config(
         return denied
 
     provider = normalize_ai_provider_type(provider_type, api_base, model_name)
-    # API 地址留空时回退该接口类型的默认地址，避免存空导致后续调用缺地址。
-    base = (str(api_base).strip() if api_base else "") or get_default_ai_base_url(provider)
+    base = _explicit_api_base(api_base)
+    if not base:
+        return error_response(CODE_PARAM_ERROR, _EMPTY_BASE_MESSAGE)
     model = str(model_name).strip() if model_name else None
     instr = str(instructions) if instructions is not None else None
 
@@ -218,9 +229,9 @@ def fetch_models(
         api_base if api_base else (record.api_base if record else None),
         None,
     )
-    base = (str(api_base).strip() if api_base else "") or (
-        (record.api_base if record else None) or get_default_ai_base_url(provider)
-    )
+    base = _explicit_api_base(api_base, record)
+    if not base:
+        return error_response(CODE_PARAM_ERROR, _EMPTY_BASE_MESSAGE)
     key = str(api_key).strip() if api_key else ""
     if not key and record is not None:
         key = try_decrypt_text(record.api_key_enc) or ""
@@ -287,9 +298,9 @@ def test_ai_config(
         api_base if api_base else (record.api_base if record else None),
         model_name if model_name else (record.model_name if record else None),
     )
-    base = (str(api_base).strip() if api_base else "") or (
-        (record.api_base if record else None) or get_default_ai_base_url(provider)
-    )
+    base = _explicit_api_base(api_base, record)
+    if not base:
+        return error_response(CODE_PARAM_ERROR, _EMPTY_BASE_MESSAGE)
     model = (str(model_name).strip() if model_name else "") or (
         record.model_name if record else ""
     )

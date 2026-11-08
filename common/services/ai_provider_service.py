@@ -167,6 +167,8 @@ def get_ai_settings_missing_fields(settings: Dict[str, Any] | None) -> List[str]
     missing: List[str] = []
     if not api_key:
         missing.append("API 密钥")
+    if not base_url:
+        missing.append("API 地址")
     if provider != "dashscope_app" and not model_name:
         missing.append("模型名称")
     if provider == "dashscope_app" and ("{app_id}" in base_url or "/apps/" not in base_url):
@@ -187,17 +189,25 @@ def normalize_openai_base_url(base_url: Any) -> str:
     return base
 
 
+def _explicit_base(base_url: Any) -> str:
+    """空白地址直接拒绝，不回退任何云端默认主机。"""
+    base = clean_ai_text(base_url)
+    if not base:
+        raise AiProviderError("未配置 API 地址，已拒绝访问默认云端模型")
+    return base.rstrip("/")
+
+
 def _build_anthropic_url(base_url: Any, path: str) -> str:
-    """拼接 Anthropic 接口地址。"""
-    base = (clean_ai_text(base_url) or AI_PROVIDER_DEFAULT_BASE_URLS["anthropic"]).rstrip("/")
+    """拼接 Anthropic 接口地址。空地址不使用官方主机。"""
+    base = _explicit_base(base_url)
     if base.endswith("/v1"):
         return f"{base}/{path.lstrip('/')}"
     return f"{base}/v1/{path.lstrip('/')}"
 
 
 def _build_gemini_url(base_url: Any, path: str) -> str:
-    """拼接 Gemini 接口地址。"""
-    base = (clean_ai_text(base_url) or AI_PROVIDER_DEFAULT_BASE_URLS["gemini"]).rstrip("/")
+    """拼接 Gemini 接口地址。空地址不使用官方主机。"""
+    base = _explicit_base(base_url)
     if base.endswith("/v1beta") or base.endswith("/v1"):
         return f"{base}/{path.lstrip('/')}"
     return f"{base}/v1beta/{path.lstrip('/')}"
@@ -530,17 +540,15 @@ def _test_gemini(
 def _test_dashscope_app(base_url: Any, key: str, prompt: str, timeout: float) -> str:
     """测试 DashScope 应用接口（/apps/{app_id}/completion）。"""
     base = clean_ai_text(base_url)
-    if "/apps/" not in base:
-        raise AiProviderError("DashScope 应用地址中未找到 app_id")
-    app_id = base.split("/apps/", 1)[1].split("/", 1)[0]
-    url = f"https://dashscope.aliyuncs.com/api/v1/apps/{app_id}/completion"
+    if not base.startswith(("http://", "https://")) or "/apps/" not in base:
+        raise AiProviderError("未配置 API 地址，已拒绝访问默认云端模型")
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     payload = {
         "input": {"prompt": prompt},
         "parameters": {"max_tokens": 50, "temperature": 0.5},
         "debug": {},
     }
-    result = _http_post_json(url, headers, payload, timeout)
+    result = _http_post_json(base, headers, payload, timeout)
     try:
         return clean_ai_text(result["output"]["text"]) or "测试成功"
     except (KeyError, TypeError) as exc:

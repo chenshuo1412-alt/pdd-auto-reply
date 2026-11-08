@@ -387,6 +387,7 @@ class BaseRequest(SessionReloginMixin):
         url = rewrite_platform_http(url)
         enforce(purpose, shop_id=self.shop_id, url=url, customer_uid=customer_uid)
         merged_headers = self._merge_headers(headers)
+        kwargs["allow_redirects"] = False
 
         def _make_request() -> requests.Response:
             return requests.get(
@@ -446,6 +447,7 @@ class BaseRequest(SessionReloginMixin):
         url = rewrite_platform_http(url)
         enforce(purpose, shop_id=self.shop_id, url=url, customer_uid=customer_uid)
         merged_headers = self._merge_headers(headers)
+        kwargs["allow_redirects"] = False
 
         def _make_request() -> requests.Response:
             return requests.post(

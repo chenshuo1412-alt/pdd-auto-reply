@@ -44,6 +44,7 @@ from channel_pdd.core.anti_content import (
     is_signature_invalid_response,
 )
 from channel_pdd.core.credential_store import load_account_cookies
+from common.core.platform_guard import PlatformDenied, enforce, rewrite_platform_http
 from channel_pdd.core.session_relogin import (
     SESSION_EXPIRED_ERROR_CODE,
     SESSION_EXPIRED_KEYWORD,
@@ -61,6 +62,10 @@ DEFAULT_TIMEOUT: int = 30
 
 # 触发重试的 HTTP 状态码（除 5xx 外的可重试客户端 / 网关错误）。
 _RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({408, 429, 502, 503, 504})
+
+
+class TransportUnclear(RuntimeError):
+    """发送结果不明（超时、断连、5xx 或空响应）。禁止自动重试。"""
 
 
 class BaseRequest(SessionReloginMixin):
@@ -237,6 +242,9 @@ class BaseRequest(SessionReloginMixin):
         request_func: Callable[[], requests.Response],
         expect_json: bool = True,
         check_signature: bool = False,
+        max_retries: Optional[int] = None,
+        allow_relogin: bool = True,
+        transport_raises: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """带重试机制执行请求，并在需要时做签名失效检测与会话过期自动重登。
 
@@ -252,8 +260,9 @@ class BaseRequest(SessionReloginMixin):
             AntiContentMissingError: ``check_signature`` 为真且响应判定为签名失效。
         """
         relogin_attempted = False  # 仅允许一次自动重登，避免死循环。
+        retries = self.max_retries if max_retries is None else max_retries
 
-        for attempt in range(self.max_retries + 1):
+        for attempt in range(retries + 1):
             try:
                 response = request_func()
 
@@ -262,7 +271,8 @@ class BaseRequest(SessionReloginMixin):
 
                     # 会话过期：自动重登后继续重试（仅一次）。
                     if (
-                        response_data
+                        allow_relogin
+                        and response_data
                         and self._is_session_expired(response_data)
                         and not relogin_attempted
                         and self.shop_id is not None
@@ -286,7 +296,9 @@ class BaseRequest(SessionReloginMixin):
                     return response_data
 
                 # 非 200：按需重试。
-                if attempt < self.max_retries and self._should_retry(response=response):
+                if transport_raises and response is not None and response.status_code >= 500:
+                    raise TransportUnclear(f"http {response.status_code}")
+                if attempt < retries and self._should_retry(response=response):
                     delay = self._calculate_retry_delay(attempt)
                     logger.warning(
                         "请求失败（状态码 %s），第 %s 次重试，延迟 %.2f 秒",
@@ -298,11 +310,12 @@ class BaseRequest(SessionReloginMixin):
                     continue
                 return self._handle_response(response, expect_json) if response else None
 
-            except AntiContentMissingError:
-                # 领域异常直接上抛，由上层转换为统一响应体 / 记录系统日志。
+            except (AntiContentMissingError, PlatformDenied, TransportUnclear):
                 raise
             except Exception as exc:  # noqa: BLE001
-                if attempt < self.max_retries and self._should_retry(exception=exc):
+                if transport_raises and attempt >= retries:
+                    raise TransportUnclear(str(exc)) from exc
+                if attempt < retries and self._should_retry(exception=exc):
                     delay = self._calculate_retry_delay(attempt)
                     logger.warning(
                         "请求异常（%s），第 %s 次重试，延迟 %.2f 秒",
@@ -315,7 +328,9 @@ class BaseRequest(SessionReloginMixin):
                 logger.error("请求最终失败: %s", exc)
                 return None
 
-        logger.error("重试 %s 次后仍失败", self.max_retries)
+        logger.error("重试 %s 次后仍失败", retries)
+        if transport_raises:
+            raise TransportUnclear("重试耗尽且结果不明")
         return None
 
     # ------------------------------------------------------------------
@@ -343,6 +358,11 @@ class BaseRequest(SessionReloginMixin):
         timeout: int = DEFAULT_TIMEOUT,
         expect_json: bool = True,
         check_signature: bool = False,
+        purpose: str = "read",
+        customer_uid: Optional[str] = None,
+        max_retries: Optional[int] = None,
+        allow_relogin: bool = True,
+        transport_raises: bool = False,
         **kwargs: Any,
     ) -> Optional[Dict[str, Any]]:
         """发起 GET 请求（统一重试 / 重登 / 可选签名检测）。
@@ -364,6 +384,8 @@ class BaseRequest(SessionReloginMixin):
         """
         if check_signature:
             self.ensure_anti_content()
+        url = rewrite_platform_http(url)
+        enforce(purpose, shop_id=self.shop_id, url=url, customer_uid=customer_uid)
         merged_headers = self._merge_headers(headers)
 
         def _make_request() -> requests.Response:
@@ -377,7 +399,12 @@ class BaseRequest(SessionReloginMixin):
             )
 
         return self._execute_with_retry(
-            _make_request, expect_json=expect_json, check_signature=check_signature
+            _make_request,
+            expect_json=expect_json,
+            check_signature=check_signature,
+            max_retries=max_retries,
+            allow_relogin=allow_relogin,
+            transport_raises=transport_raises,
         )
 
     def post(
@@ -389,6 +416,11 @@ class BaseRequest(SessionReloginMixin):
         timeout: int = DEFAULT_TIMEOUT,
         expect_json: bool = True,
         check_signature: bool = False,
+        purpose: str = "read",
+        customer_uid: Optional[str] = None,
+        max_retries: Optional[int] = None,
+        allow_relogin: bool = True,
+        transport_raises: bool = False,
         **kwargs: Any,
     ) -> Optional[Dict[str, Any]]:
         """发起 POST 请求（统一重试 / 重登 / 可选签名检测）。
@@ -411,6 +443,8 @@ class BaseRequest(SessionReloginMixin):
         """
         if check_signature:
             self.ensure_anti_content()
+        url = rewrite_platform_http(url)
+        enforce(purpose, shop_id=self.shop_id, url=url, customer_uid=customer_uid)
         merged_headers = self._merge_headers(headers)
 
         def _make_request() -> requests.Response:
@@ -425,7 +459,12 @@ class BaseRequest(SessionReloginMixin):
             )
 
         return self._execute_with_retry(
-            _make_request, expect_json=expect_json, check_signature=check_signature
+            _make_request,
+            expect_json=expect_json,
+            check_signature=check_signature,
+            max_retries=max_retries,
+            allow_relogin=allow_relogin,
+            transport_raises=transport_raises,
         )
 
     # ------------------------------------------------------------------
@@ -479,6 +518,7 @@ class BaseRequest(SessionReloginMixin):
 
 __all__ = [
     "BaseRequest",
+    "TransportUnclear",
     "SESSION_EXPIRED_ERROR_CODE",
     "SESSION_EXPIRED_KEYWORD",
 ]

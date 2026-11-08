@@ -29,6 +29,16 @@ from channel_pdd.core.pdd_config import HeartbeatConfig, ReconnectConfig
 from channel_pdd.pdd_channel import PDDChannel
 
 
+@pytest.fixture(autouse=True)
+def _loopback_channel(monkeypatch):
+    """连接单测使用回环地址，默认安全模式不会建连。"""
+    monkeypatch.setenv("PDD_NETWORK_MODE", "loopback")
+    monkeypatch.setenv("PDD_WS_BASE_URL", "ws://127.0.0.1:9/")
+    monkeypatch.setenv("PDD_ALLOW_SHOP_IDS", "shop_a,shop_b,shop_c,shop_d,shop_e")
+    monkeypatch.setenv("PDD_SEND_ENABLED", "1")
+    monkeypatch.setenv("PDD_PRESENCE_ENABLED", "0")
+
+
 class _FakeWebSocket:
     """最小化假 WebSocket：可投递若干消息后正常关闭，记录发送内容与 ping 次数。"""
 

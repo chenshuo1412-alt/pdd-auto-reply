@@ -26,6 +26,7 @@ from typing import List, Tuple
 
 from sqlalchemy.orm import Session
 
+from common.core.platform_guard import scheduler_platform_enabled
 from common.db.repository import Repository, run_with_retry
 from common.models.shop_models import Shop
 
@@ -61,7 +62,11 @@ def run_cookie_refresh() -> None:
 
     遍历全部启用店铺，逐个经 HTTP 调用 websocket 服务刷新 Cookie；汇总成功 /
     失败数量并写一条执行日志。任一店铺调用失败不中断整体遍历。
+    安全模式下一律不触发。
     """
+    if not scheduler_platform_enabled():
+        task_run_log.write_success(TASK_COOKIE_REFRESH, "安全模式，跳过 Cookie 刷新，未访问平台")
+        return
     try:
         shops = run_with_retry(_list_enabled_shops)
     except Exception as exc:  # noqa: BLE001 —— 取店铺失败：记失败日志后返回
@@ -96,7 +101,11 @@ def run_product_sync() -> None:
 
     遍历全部启用店铺，逐个经 HTTP 调用 backend 服务触发商品同步；汇总成功 /
     失败数量并写一条执行日志。任一店铺调用失败不中断整体遍历。
+    安全模式下一律不触发。
     """
+    if not scheduler_platform_enabled():
+        task_run_log.write_success(TASK_PRODUCT_SYNC, "安全模式，跳过商品同步，未访问平台")
+        return
     try:
         shops = run_with_retry(_list_enabled_shops)
     except Exception as exc:  # noqa: BLE001 —— 取店铺失败：记失败日志后返回

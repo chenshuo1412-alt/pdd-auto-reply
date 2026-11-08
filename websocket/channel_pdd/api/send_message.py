@@ -27,9 +27,12 @@ channel_pdd.api.send_message —— 拼多多消息发送 / 客服列表 / 会�
 from __future__ import annotations
 
 import logging
+import os
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from channel_pdd.core.base_request import BaseRequest
+from channel_pdd.core.base_request import BaseRequest, TransportUnclear
+from common.core.platform_guard import PlatformDenied
 
 logger = logging.getLogger("channel_pdd.send_message")
 
@@ -47,6 +50,15 @@ MOVE_CONVERSATION_URL: str = "https://mms.pinduoduo.com/plateau/chat/move_conver
 
 # 拼多多「发送文本消息」失败的业务错误码（参照实测）。
 _SEND_TEXT_ERROR_CODE: int = 10002
+
+
+@dataclass
+class SendResult:
+    """一次发送的确定结果。unknown 表示可能已送达，调用方禁止自动重发。"""
+
+    status: str
+    payload: Optional[Dict[str, Any]] = None
+    detail: str = ""
 
 
 class SendMessage(BaseRequest):
@@ -71,6 +83,50 @@ class SendMessage(BaseRequest):
             channel_name: 渠道名称（默认 pinduoduo）。
         """
         super().__init__(shop_id=shop_id, user_id=user_id, channel_name=channel_name)
+        self.last_delivery = SendResult("failed", detail="尚未发送")
+
+    def _deliver(
+        self,
+        url: str,
+        json_data: Dict[str, Any],
+        customer_uid: Any,
+        headers: Optional[Dict[str, str]] = None,
+        check_signature: bool = False,
+    ) -> SendResult:
+        """单次发送。超时、断连和 5xx 记为 unknown，不做 HTTP 重试，也不自动重登。"""
+        try:
+            result = self.post(
+                url,
+                json_data=json_data,
+                headers=headers,
+                check_signature=check_signature,
+                purpose="send",
+                customer_uid=None if customer_uid is None else str(customer_uid),
+                max_retries=0,
+                allow_relogin=False,
+                transport_raises=True,
+                timeout=float(os.environ.get("PDD_SEND_TIMEOUT", "15")),
+            )
+        except PlatformDenied as exc:
+            self.last_delivery = SendResult("failed", detail=str(exc))
+            return self.last_delivery
+        except TransportUnclear as exc:
+            self.last_delivery = SendResult("unknown", detail=str(exc))
+            return self.last_delivery
+        if not isinstance(result, dict):
+            self.last_delivery = SendResult("unknown", detail="空响应")
+            return self.last_delivery
+        if result.get("success") is True:
+            inner = result.get("result") or {}
+            if isinstance(inner, dict) and inner.get("error_code") == _SEND_TEXT_ERROR_CODE:
+                self.last_delivery = SendResult(
+                    "failed", payload=result, detail=str(inner.get("error") or "业务拒绝")
+                )
+                return self.last_delivery
+            self.last_delivery = SendResult("sent", payload=result)
+            return self.last_delivery
+        self.last_delivery = SendResult("failed", payload=result, detail="对端明确拒绝")
+        return self.last_delivery
 
     # ------------------------------------------------------------------
     # 文本 / 图片消息（不依赖 anti-content 签名，需求 26.4）
@@ -85,7 +141,7 @@ class SendMessage(BaseRequest):
             message_content: 文本内容。
 
         Returns:
-            成功返回响应字典；业务失败 / 异常返回 None。
+            SendResult。sent 才表示对端明确接受。
         """
         data = {
             "data": {
@@ -104,16 +160,13 @@ class SendMessage(BaseRequest):
             "client": "WEB",
         }
 
-        result = self.post(SEND_MESSAGE_URL, json_data=data)
-        if result and result.get("success") is True:
-            # 拼多多在 success=true 时仍可能携带业务错误码（如 10002）。
-            inner = result.get("result", {}) or {}
-            if inner.get("error_code") == _SEND_TEXT_ERROR_CODE:
-                logger.error("发送文本消息失败: %s", inner.get("error"))
-                return None
-            return result
-        logger.error("发送文本消息失败: shop_id=%s, 响应=%s", self.shop_id, result)
-        return None
+        delivered = self._deliver(SEND_MESSAGE_URL, data, recipient_uid)
+        if delivered.status != "sent":
+            logger.error(
+                "发送文本消息未成功: shop_id=%s, status=%s, detail=%s",
+                self.shop_id, delivered.status, delivered.detail,
+            )
+        return delivered
 
     def send_image(
         self, recipient_uid: Any, image_url: str
@@ -145,11 +198,7 @@ class SendMessage(BaseRequest):
             "client": "WEB",
         }
 
-        result = self.post(SEND_MESSAGE_URL, json_data=data)
-        if result and result.get("success") is True:
-            return result
-        logger.error("发送图片消息失败: shop_id=%s, 响应=%s", self.shop_id, result)
-        return None
+        return self._deliver(SEND_MESSAGE_URL, data, recipient_uid)
 
     # ------------------------------------------------------------------
     # 商品卡片（依赖 anti-content 签名，需求 16.4 / 26.1）
@@ -169,7 +218,7 @@ class SendMessage(BaseRequest):
             biz_type: 业务类型，默认 2（客服推荐商品）。
 
         Returns:
-            成功返回响应字典；业务失败返回 None。
+            SendResult。签名缺失仍抛 AntiContentMissingError，供上层降级。
 
         Raises:
             AntiContentMissingError: 当前 Cookie 缺少有效签名或接口返回签名失效。
@@ -188,24 +237,25 @@ class SendMessage(BaseRequest):
             "referer": "https://mms.pinduoduo.com/chat-merchant/index.html",
         }
 
-        result = self.post(
+        delivered = self._deliver(
             MALL_GOODS_CARD_URL,
-            json_data=data,
+            data,
+            recipient_uid,
             headers=headers,
             check_signature=True,
         )
-        if result and result.get("success") is True:
+        result = delivered.payload
+        if delivered.status == "sent" and result and result.get("success") is True:
             logger.info(
                 "商品卡片发送成功: shop_id=%s, goods_id=%s, to=%s",
                 self.shop_id, goods_id, recipient_uid,
             )
-            return result
+            return delivered
         logger.error(
-            "商品卡片发送失败: shop_id=%s, 响应=%s",
-            self.shop_id,
-            (result or {}).get("error_msg", "未知错误") if result else result,
+            "商品卡片发送失败: shop_id=%s, status=%s, detail=%s",
+            self.shop_id, delivered.status, delivered.detail,
         )
-        return None
+        return delivered
 
     # ------------------------------------------------------------------
     # 客服列表查询（需求 16.1）
@@ -221,7 +271,7 @@ class SendMessage(BaseRequest):
             成功返回规整后的客服列表（每项含 cs_uid / cs_name）；失败返回 None。
         """
         data = {"wechatCheck": True}
-        result = self.post(ASSIGN_CS_LIST_URL, json_data=data)
+        result = self.post(ASSIGN_CS_LIST_URL, json_data=data, purpose="read", max_retries=0)
         if result and result.get("success") is True:
             inner = result.get("result", {}) or {}
             cs_raw = inner.get("csList")
@@ -316,8 +366,9 @@ class SendMessage(BaseRequest):
             "client": "WEB",
         }
 
-        result = self.post(MOVE_CONVERSATION_URL, json_data=data)
-        if result and result.get("success") is True:
+        delivered = self._deliver(MOVE_CONVERSATION_URL, data, recipient_uid)
+        result = delivered.payload if delivered.status == "sent" else None
+        if delivered.status == "sent" and result and result.get("success") is True:
             logger.info(
                 "会话转移成功: shop_id=%s, to_cs=%s, customer=%s",
                 self.shop_id, cs_uid, recipient_uid,
@@ -329,6 +380,7 @@ class SendMessage(BaseRequest):
 
 __all__ = [
     "SendMessage",
+    "SendResult",
     "SEND_MESSAGE_URL",
     "MALL_GOODS_CARD_URL",
     "ASSIGN_CS_LIST_URL",

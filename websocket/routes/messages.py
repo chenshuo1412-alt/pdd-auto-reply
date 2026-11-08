@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from channel_pdd.api.get_chat_history import GetChatHistory
 from channel_pdd.api.get_conversations import GetConversations
 from channel_pdd.api.send_message import SendMessage
+from common.core.platform_guard import decide
 from common.schemas.common import ApiResponse, error_response, success_response
 
 logger = logging.getLogger("websocket.routes.messages")
@@ -64,14 +65,19 @@ async def send_message(payload: SendMessageRequest) -> ApiResponse:
     Returns:
         统一响应体：下发成功返回 success；失败返回 error_response。
     """
+    allowed, reason = decide(
+        "send", shop_id=payload.shop_id, customer_uid=str(payload.recipient_uid)
+    )
+    if not allowed:
+        return error_response(-1, reason)
     try:
         sender = SendMessage(shop_id=payload.shop_id, user_id=payload.owner_user_id)
         result = sender.send_text(payload.recipient_uid, payload.content)
     except Exception as exc:  # noqa: BLE001 - 发送异常不抛出，规整为失败响应
         logger.error("手动发送消息异常: shop_id=%s, %s", payload.shop_id, exc)
-        return error_response(-1, "消息发送失败，请稍后重试")
+        return error_response(-1, "消息发送未确认，请勿立即重发")
 
-    if result is not None:
+    if getattr(result, "status", None) == "sent":
         logger.info(
             "手动消息已下发: shop_id=%s, customer=%s",
             payload.shop_id,
@@ -79,8 +85,10 @@ async def send_message(payload: SendMessageRequest) -> ApiResponse:
         )
         return success_response(message="消息已发送")
 
+    if getattr(result, "status", None) == "unknown":
+        return error_response(-1, "发送结果不明，已禁止自动重试")
     logger.warning("手动发送消息失败: shop_id=%s", payload.shop_id)
-    return error_response(-1, "消息发送失败")
+    return error_response(-1, "消息发送失败，未自动重试")
 
 
 class ConversationListRequest(BaseModel):

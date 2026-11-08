@@ -175,8 +175,10 @@ def get_ai_settings_missing_fields(settings: Dict[str, Any] | None) -> List[str]
 
 
 def normalize_openai_base_url(base_url: Any) -> str:
-    """规范化 OpenAI 兼容接口基础地址（去除尾部 /chat/completions 等）。"""
-    base = clean_ai_text(base_url) or DEFAULT_AI_BASE_URL
+    """规范化 OpenAI 兼容接口基础地址。空地址拒绝，不再回退到云端默认。"""
+    base = clean_ai_text(base_url)
+    if not base:
+        raise AiProviderError("未配置 API 地址，已拒绝访问默认云端模型")
     base = base.rstrip("/")
     if base.endswith("/chat/completions"):
         base = base[: -len("/chat/completions")]

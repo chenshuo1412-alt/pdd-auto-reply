@@ -131,11 +131,14 @@ class LLMClient:
             ImportError: 未安装 openai 依赖时抛出，由上层捕获回退默认回复。
         """
         if self._client is None:
+            base = (self.api_base or "").strip()
+            if not base:
+                raise RuntimeError("未配置 API 地址，拒绝访问默认云端模型")
             from openai import AsyncOpenAI  # 局部导入仅为惰性加载可选依赖
 
             self._client = AsyncOpenAI(
                 api_key=self.api_key,
-                base_url=self.api_base or None,
+                base_url=base,
                 timeout=self.timeout_seconds,
             )
         return self._client
@@ -255,10 +258,10 @@ class LLMClient:
         """Anthropic Claude 协议纯对话调用（/v1/messages）。"""
         import httpx
 
-        from common.services.ai_provider_service import AI_PROVIDER_DEFAULT_BASE_URLS
-
         system_content, turns = self._split_system_and_turns(messages)
-        base = (self.api_base or AI_PROVIDER_DEFAULT_BASE_URLS["anthropic"]).rstrip("/")
+        if not (self.api_base or "").strip():
+            raise RuntimeError("未配置 API 地址，拒绝访问默认云端模型")
+        base = self.api_base.strip().rstrip("/")
         url = f"{base}/v1/messages" if not base.endswith("/v1") else f"{base}/messages"
 
         payload: Dict[str, Any] = {
@@ -295,10 +298,10 @@ class LLMClient:
         """Google Gemini 协议纯对话调用（generateContent）。"""
         import httpx
 
-        from common.services.ai_provider_service import AI_PROVIDER_DEFAULT_BASE_URLS
-
         system_content, turns = self._split_system_and_turns(messages)
-        base = (self.api_base or AI_PROVIDER_DEFAULT_BASE_URLS["gemini"]).rstrip("/")
+        if not (self.api_base or "").strip():
+            raise RuntimeError("未配置 API 地址，拒绝访问默认云端模型")
+        base = self.api_base.strip().rstrip("/")
         version_seg = "" if (base.endswith("/v1beta") or base.endswith("/v1")) else "/v1beta"
         url = f"{base}{version_seg}/models/{self.model_name}:generateContent"
 

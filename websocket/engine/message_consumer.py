@@ -61,7 +61,7 @@ from common.models.reply_models import (
     GoodsReply,
     KeywordRule,
 )
-from common.utils.time_utils import now_beijing, now_beijing_naive
+from common.utils.time_utils import now_beijing_naive
 from engine.keyword_matcher import REPLY_IMAGE, REPLY_TEXT
 from engine.reply_engine import (
     ACTION_AI,
@@ -422,6 +422,43 @@ class MessageConsumer:
     # 处理：转人工 → 决策链 → AI/降级 → 发送 → 落库
     # ------------------------------------------------------------------
     async def process(self, context: Context) -> ProcessOutcome:
+        """占用 msg_id 后处理。同一店铺同一消息只发送一次，结果不明不重发。"""
+        from common.services.reply_dispatch import admit, finish
+
+        customer_uid = context.kwargs.get("from_uid")
+        msg_id = str(context.kwargs.get("msg_id") or "").strip()
+        verdict = admit(
+            self.shop_id, msg_id, None if customer_uid is None else str(customer_uid)
+        )
+        if verdict != "owner":
+            logger.info(
+                "跳过出站: shop_id=%s, msg_id=%s, 原因=%s",
+                self.shop_id, msg_id or "-", verdict,
+            )
+            return ProcessOutcome(
+                handled=True, action="suppressed", replied=False, log_result=verdict
+            )
+        self._dispatch_status = None
+        self._dispatch_detail = ""
+        try:
+            outcome = await self._process_body(context)
+        except Exception:
+            finish(
+                self.shop_id,
+                msg_id,
+                self._dispatch_status or "failed",
+                self._dispatch_detail or "处理异常，未发送",
+            )
+            raise
+        finish(
+            self.shop_id,
+            msg_id,
+            self._dispatch_status or "failed",
+            self._dispatch_detail or ("未发送" if not self._dispatch_status else ""),
+        )
+        return outcome
+
+    async def _process_body(self, context: Context) -> ProcessOutcome:
         """对一条客户消息执行端到端处理（决策 + 发送 + 记日志）。
 
         Args:
@@ -699,6 +736,8 @@ class MessageConsumer:
                 fallback.goods_id,
             )
             if result.success:
+                self._dispatch_status = "sent"
+                self._dispatch_detail = "goods_card"
                 self._track_reply(customer_uid)
                 # 商品卡片发送不经 _send_reply，需在此显式补记 out 方向聊天记录，
                 # 否则在线聊天与 AI 历史会缺这条回复。
@@ -723,6 +762,19 @@ class MessageConsumer:
                     content="[商品卡片]",
                 )
             # 接口失败 / 签名缺失降级：落到文本降级
+            if getattr(result, "delivery", "") == "unknown":
+                self._dispatch_status = "unknown"
+                self._dispatch_detail = result.message or "发送结果不明"
+                logger.warning(
+                    "商品卡片结果不明，不降级重发: shop_id=%s, goods_id=%s",
+                    self.shop_id, fallback.goods_id,
+                )
+                return ProcessOutcome(
+                    handled=True,
+                    action=ACTION_GOODS_SPECIFIC,
+                    replied=False,
+                    log_result=decision.log_result,
+                )
             logger.info(
                 "商品卡片发送失败，降级为文本回复: shop_id=%s, 客户=%s, goods_id=%s, 原因=%s",
                 self.shop_id,
@@ -779,11 +831,16 @@ class MessageConsumer:
                 customer_uid, message_content=text
             )
         )
+        self._dispatch_status = getattr(result, "delivery", None) or (
+            "sent" if getattr(result, "success", False) else "failed"
+        )
+        self._dispatch_detail = getattr(result, "message", "") or ""
         logger.info(
-            "转人工结果: shop_id=%s, 客户=%s, 成功=%s",
+            "转人工结果: shop_id=%s, 客户=%s, 成功=%s, 投递=%s",
             self.shop_id,
             customer_uid,
             getattr(result, "success", False),
+            self._dispatch_status,
         )
         # transfer_to_human 内部已记消息日志；此处仅汇报结果
         return ProcessOutcome(
@@ -819,16 +876,19 @@ class MessageConsumer:
                 result = await asyncio.to_thread(sender.send_image, recipient_uid, content)
             else:
                 result = await asyncio.to_thread(sender.send_text, recipient_uid, content)
-            sent = result is not None
-            # 发送结果日志：记录回复类型与发送成败，便于核对自动回复是否真正下发。
-            preview = content if len(str(content)) <= 200 else str(content)[:200] + "...(已截断)"
+            status = getattr(result, "status", None)
+            if status is None:
+                status = "sent" if result else "unknown"
+            self._dispatch_status = status
+            self._dispatch_detail = getattr(result, "detail", "") or ""
+            sent = status == "sent"
             logger.info(
-                "发送回复: shop_id=%s, 客户=%s, 类型=%s, 成功=%s, 内容=%s",
+                "发送回复: shop_id=%s, 客户=%s, 类型=%s, 状态=%s, 长度=%s",
                 self.shop_id,
                 recipient_uid,
                 reply_type or REPLY_TEXT,
-                sent,
-                preview,
+                status,
+                len(str(content or "")),
             )
             # 发送成功：把本次回复落库为聊天记录（out 方向），供在线聊天展示与
             # AI 会话上下文使用（失败不落库，避免记录未真正送达的回复）。
@@ -846,18 +906,21 @@ class MessageConsumer:
         客户键，避免长时间运行下回复时间序列与字典只增不减导致内存泄漏、且使风控
         窗口统计随列表膨胀而变慢。保留期远大于任何合理的风控统计窗口，不影响判定。
         """
-        moment = now_beijing()
+        moment = now_beijing_naive()
         uid = str(customer_uid)
         horizon = moment - timedelta(seconds=_REPLY_RETENTION_SECONDS)
+
+        def _naive(value):
+            return value.replace(tzinfo=None) if getattr(value, "tzinfo", None) else value
 
         # 会话维度：追加并裁剪该客户的过期时刻；裁剪后为空则移除该键。
         session_times = self._session_reply_times[uid]
         session_times.append(moment)
-        self._session_reply_times[uid] = [t for t in session_times if t >= horizon]
+        self._session_reply_times[uid] = [t for t in session_times if _naive(t) >= horizon]
 
         # 店铺维度：追加并裁剪过期时刻。
         self._shop_reply_times.append(moment)
-        self._shop_reply_times = [t for t in self._shop_reply_times if t >= horizon]
+        self._shop_reply_times = [t for t in self._shop_reply_times if _naive(t) >= horizon]
 
         # 清理其它已不活跃且裁剪后为空的客户键，防止字典无界增长。
         empty_uids = [

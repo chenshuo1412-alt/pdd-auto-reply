@@ -80,6 +80,7 @@ class TransferResult:
     success: bool = False
     message: str = ""
     downgrade: bool = False
+    delivery: str = "failed"
     data: Optional[Dict[str, Any]] = field(default=None)
 
 
@@ -244,6 +245,11 @@ class TransferService:
                 return TransferResult(success=False, message=reason)
 
             result = self._sender.move_conversation(recipient_uid, target_cs)
+            delivery = getattr(getattr(self._sender, "last_delivery", None), "status", "failed")
+            if delivery == "unknown":
+                reason = f"{TRANSFER_FAILED_PREFIX}：发送结果不明，不重试"
+                self._record_message_log(recipient_uid, message_content, reason)
+                return TransferResult(success=False, message=reason, delivery="unknown")
             if result is not None:
                 self._record_message_log(
                     recipient_uid, message_content, PROCESS_RESULT_TRANSFERRED
@@ -253,7 +259,7 @@ class TransferService:
                     self.shop_id, recipient_uid, target_cs,
                 )
                 return TransferResult(
-                    success=True, message="已转人工", data=result
+                    success=True, message="已转人工", delivery="sent", data=result
                 )
 
             reason = f"{TRANSFER_FAILED_PREFIX}：会话转移接口调用失败"
@@ -290,14 +296,25 @@ class TransferService:
             result = self._sender.send_mall_goods_card(
                 recipient_uid, goods_id, biz_type=biz_type
             )
-            if result is not None:
+            if isinstance(result, dict):
+                status = "sent" if result.get("success") else "failed"
+            else:
+                status = getattr(result, "status", "failed")
+            if status == "sent":
                 logger.info(
                     "商品卡片已发送: shop_id=%s, customer=%s, goods_id=%s",
                     self.shop_id, recipient_uid, goods_id,
                 )
                 return TransferResult(
-                    success=True, message="商品卡片已发送", data=result
+                    success=True,
+                    message="商品卡片已发送",
+                    delivery="sent",
+                    data=getattr(result, "payload", None),
                 )
+            if status == "unknown":
+                reason = f"{GOODS_CARD_FAILED_PREFIX}：发送结果不明，不重试"
+                self._record_message_log(recipient_uid, None, reason)
+                return TransferResult(success=False, message=reason, delivery="unknown")
 
             reason = f"{GOODS_CARD_FAILED_PREFIX}：接口调用失败"
             self._record_message_log(recipient_uid, None, reason)

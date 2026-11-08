@@ -30,6 +30,7 @@ from channel_pdd.core.credential_store import (
     load_account_credentials,
     update_account_cookies,
 )
+from common.core.platform_guard import scheduler_platform_enabled
 from common.schemas.common import ApiResponse, error_response, success_response
 
 logger = logging.getLogger("websocket.routes.cookies")
@@ -66,6 +67,8 @@ async def refresh_cookie(payload: RefreshCookieRequest) -> ApiResponse:
         统一响应体：刷新成功返回 success；失败返回 error_response。
     """
     # owner_user_id 缺失无法定位账号凭据，直接返回失败（不抛异常）。
+    if not scheduler_platform_enabled():
+        return error_response(-1, "安全模式拒绝刷新平台会话")
     if payload.owner_user_id is None:
         logger.warning("Cookie 刷新缺少归属用户 ID：shop_id=%s", payload.shop_id)
         return error_response(-1, "缺少归属用户信息，无法刷新 Cookie")

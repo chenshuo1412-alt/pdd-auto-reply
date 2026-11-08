@@ -36,14 +36,19 @@ class _FakeResponse:
 
 
 @pytest.fixture(autouse=True)
-def _no_sleep(monkeypatch):
-    """消除重试等待，加速测试。"""
+def _loopback_send(monkeypatch):
+    """发送单测只走回环策略。"""
+    monkeypatch.setenv("PDD_NETWORK_MODE", "loopback")
+    monkeypatch.setenv("PDD_HTTP_BASE_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("PDD_ALLOW_SHOP_IDS", "shop1")
+    monkeypatch.setenv("PDD_SEND_ENABLED", "1")
     monkeypatch.setattr(br_mod.time, "sleep", lambda *_a, **_k: None)
 
 
 def _make_sender(cookies=None):
     """构造不触发 DB 加载的 SendMessage，并手动注入 cookies。"""
     sender = SendMessage()
+    sender.shop_id = "shop1"
     sender.cookies = cookies or {}
     sender.max_retries = 0
     return sender
@@ -60,8 +65,8 @@ def test_send_text_success(monkeypatch):
     )
     sender = _make_sender()
     result = sender.send_text("uid_1", "你好")
-    assert result is not None
-    assert result["success"] is True
+    assert result.status == "sent"
+    assert result.payload["success"] is True
 
 
 def test_send_text_business_error_returns_none(monkeypatch):
@@ -73,7 +78,7 @@ def test_send_text_business_error_returns_none(monkeypatch):
         ),
     )
     sender = _make_sender()
-    assert sender.send_text("uid_1", "你好") is None
+    assert sender.send_text("uid_1", "你好").status == "failed"
 
 
 # ----------------------------------------------------------------------
@@ -87,8 +92,8 @@ def test_send_goods_card_with_valid_signature(monkeypatch):
     )
     sender = _make_sender(cookies={"anti_content": "valid-sig"})
     result = sender.send_mall_goods_card("uid_1", "goods_99")
-    assert result is not None
-    assert result["success"] is True
+    assert result.status == "sent"
+    assert result.payload["success"] is True
 
 
 def test_send_goods_card_missing_signature_raises(monkeypatch):

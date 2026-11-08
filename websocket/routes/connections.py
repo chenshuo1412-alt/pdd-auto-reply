@@ -95,12 +95,14 @@ async def connect_connection(payload: ConnectRequest) -> ApiResponse:
         统一响应体：启动成功返回 success；异常规整为失败响应（不抛出）。
     """
     try:
-        await connection_manager.start_channel(
+        started = await connection_manager.start_channel(
             payload.shop_id, payload.shop_pk, payload.owner_user_id
         )
     except Exception as exc:  # noqa: BLE001 - 启动异常不抛出，规整为失败响应
         logger.error("启动店铺连接异常: shop_id=%s, %s", payload.shop_id, exc)
         return error_response(-1, "启动店铺连接失败，请稍后重试")
+    if not started:
+        return error_response(-1, "安全模式拒绝连接平台")
     return success_response(message="已启动店铺连接")
 
 

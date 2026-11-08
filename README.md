@@ -182,6 +182,16 @@ cd common && pytest         # 公共库测试
 
 ---
 
+## 安全默认与本机 Ollama
+
+默认 `PDD_NETWORK_MODE=safe`：不连接平台、不取 token、不把客服置为在线、不发送。这不依赖管理端按钮。调度里的 Cookie 刷新和商品同步同样跳过。发送结果如果是超时、断连或空响应，记为不明，**不会自动重发**。同一店铺的同一个 `msg_id` 只会占用一次，换一个店铺不受影响。
+
+本机已有 Ollama 时，只在管理端把接口类型设为 OpenAI 兼容，`api_base` 填 `http://127.0.0.1:11434/v1`，模型名填本机已有模型，密钥填任意非空字符串，然后只用「测试连接」。`api_base` 留空会直接拒绝，不会访问云端模型。
+
+Mac 上还需自备 Python 3.11+、Node 18+、MySQL 8，并安装 `bcrypt>=4.0.1,<4.1`（passlib 1.7.4 与 bcrypt 4.1+ 不兼容）。监听地址用 `127.0.0.1`。不要启动 websocket / scheduler，不要启用店铺，不要粘贴 Cookie，不要复用旧浏览器目录。上述 Ollama 步骤未在 Mac 上实测。
+
+回环试验（仍不要指向真实店铺）必须同时设置 `PDD_NETWORK_MODE=loopback`、`PDD_ALLOW_SHOP_IDS`、回环的 `PDD_HTTP_BASE_URL` / `PDD_WS_BASE_URL`。发送和置在线另外要 `PDD_SEND_ENABLED=1`、`PDD_PRESENCE_ENABLED=1`。可用 `PDD_ALLOW_SESSION_IDS` 限制客户 UID。
+
 ## 许可证
 
 本项目采用 [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE) 开源协议。

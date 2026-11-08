@@ -49,7 +49,13 @@ class GetToken(BaseRequest):
         Returns:
             成功返回 token 字符串；失败返回 None（不抛异常，便于上层降级处理）。
         """
-        result = self.post(GET_TOKEN_URL, data={"version": "3"})
+        result = self.post(
+            GET_TOKEN_URL,
+            data={"version": "3"},
+            purpose="token",
+            max_retries=0,
+            allow_relogin=False,
+        )
         if not result:
             logger.error("店铺 shop_id=%s 获取连接 Token 失败：空响应", self.shop_id)
             return None
